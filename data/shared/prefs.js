@@ -14,7 +14,8 @@ self.prefs = (() => {
   // PAC files fetched over plain HTTP (or file:, data:, ...) can be swapped
   // by anyone on the network path and take over routing of all traffic.
   const isHttpsUrl = v => {
-    if (typeof v !== 'string' || v.length > MAX_URL) {
+    // the URL parser silently strips tabs/newlines; reject them so stored and shown values are exact
+    if (typeof v !== 'string' || v.length > MAX_URL || /[\s\x00-\x1f\x7f]/.test(v)) {
       return false;
     }
     try {

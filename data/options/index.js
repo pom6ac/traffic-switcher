@@ -68,7 +68,7 @@ const importPrefs = async text => {
     throw Error('Nothing to import: no supported settings found');
   }
 
-  const current = await chrome.storage.local.get(['script', 'last-pac', 'pacs']);
+  const current = await chrome.storage.local.get(null);
   const changes = [];
   if ('script' in clean && clean.script !== current.script) {
     changes.push('- the inline PAC script (it decides where ALL your traffic goes)');
@@ -81,6 +81,17 @@ const importPrefs = async text => {
     if (added.length) {
       changes.push('- saved PAC URLs: ' + added.join(', '));
     }
+  }
+  if ('startup-proxy' in clean && clean['startup-proxy'] !== (current['startup-proxy'] || 'no')) {
+    changes.push('- Startup Proxy: ' + clean['startup-proxy'] +
+      (clean['startup-proxy'] === 'direct' ? ' (every browser start will switch to Direct, bypassing your PAC)' : ''));
+  }
+  if ('pac-type' in clean && clean['pac-type'] !== current['pac-type']) {
+    changes.push('- PAC mode: ' + (clean['pac-type'] === 'url' ? 'URL' : 'Inline'));
+  }
+  const colors = Object.keys(clean).filter(k => k.startsWith('color-') && clean[k] !== current[k]);
+  if (colors.length) {
+    changes.push('- colors: ' + colors.join(', '));
   }
   let message = 'Import settings from this file?';
   if (changes.length) {

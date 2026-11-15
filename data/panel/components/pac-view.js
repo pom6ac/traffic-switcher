@@ -134,7 +134,14 @@ class PacView extends HTMLElement {
     });
 
     // pac_script -> script
+    // Auto-apply only after typing pauses AND the bundled syntax checker reports no errors,
+    // so half-typed or broken scripts are not pushed to Chrome.
     const changed = () => {
+      this.pending = false;
+      this.shadowRoot.getElementById('pac-2').checked = true;
+      chrome.storage.local.set({
+        'pac-type': 'data'
+      });
       app.emit('change-proxy', 'pac_script');
 
       if (self.prefs.isScript(editor.value)) {
@@ -143,9 +150,32 @@ class PacView extends HTMLElement {
         });
       }
     };
-    editor.editor.on('change', e => {
-      clearTimeout(editor.timeout);
-      editor.timeout = setTimeout(changed, 300);
+    editor.editor.on('change', () => {
+      if (this.silent) {
+        return;
+      }
+      this.pending = true;
+      clearTimeout(this.applyTimer);
+      clearTimeout(this.fallbackTimer);
+      // fallback when the syntax-check worker is unavailable
+      this.fallbackTimer = setTimeout(() => {
+        if (this.pending && !editor.linted) {
+          changed();
+        }
+      }, 1500);
+    });
+    editor.addEventListener('lint', () => {
+      if (!this.pending) {
+        return;
+      }
+      clearTimeout(this.applyTimer);
+      const errors = editor.errors;
+      if (errors.length) {
+        app.emit('notify', `PAC script not applied: syntax error on line ${errors[0].row + 1}`);
+      }
+      else {
+        this.applyTimer = setTimeout(changed, 700);
+      }
     });
 
     this.shadowRoot.getElementById('pac-1').onchange = e => {
@@ -172,8 +202,7 @@ class PacView extends HTMLElement {
     remove.addEventListener('click', () => this.remove());
     reload.addEventListener('click', () => this.reload());
 
-    href.onfocus = () => this.shadowRoot.getElementById('pac-1').click();
-    editor.onfocus = () => this.shadowRoot.getElementById('pac-2').click();
+    // focusing a field must not switch the active proxy; it is applied on edit/submit/radio click only
 
     this.build();
   }
@@ -200,6 +229,10 @@ class PacView extends HTMLElement {
       return;
     }
     href.value = href.dataset.value = pac;
+    this.shadowRoot.getElementById('pac-1').checked = true;
+    chrome.storage.local.set({
+      'pac-type': 'url'
+    });
 
     chrome.storage.local.set({
       'last-pac': href.value
@@ -220,14 +253,17 @@ class PacView extends HTMLElement {
   remove() {
     const href = this.shadowRoot.getElementById('href');
     const pac = href.value;
-    chrome.storage.local.remove('last-pac');
     app.storage({
-      pacs: []
+      'pacs': [],
+      'last-pac': ''
     }).then(prefs => {
+      if (prefs['last-pac'] === pac) {
+        chrome.storage.local.remove('last-pac');
+      }
       const index = prefs.pacs.indexOf(pac);
       if (index !== -1) {
         prefs.pacs.splice(index, 1);
-        chrome.storage.local.set(prefs, () => {
+        chrome.storage.local.set({pacs: prefs.pacs}, () => {
           href.dataset.value = '';
           href.dispatchEvent(new Event('keyup'));
           this.build();
@@ -236,10 +272,27 @@ class PacView extends HTMLElement {
     });
   }
   reload() {
-    // force Chrome to re-download the PAC file: switch to direct, then back
-    chrome.proxy.settings.set({value: {mode: 'direct'}}, () => {
-      chrome.runtime.lastError;
-      app.emit('change-proxy', 'pac_script');
+    // Re-download the PAC file that is ACTIVE in Chrome (not the unsaved text field).
+    // Chrome only refetches when the config changes, so switch through a blocking PAC
+    // (fail-closed: requests in that instant fail instead of going direct), then back.
+    chrome.proxy.settings.get({}, ({value, levelOfControl}) => {
+      const url = value.mode === 'pac_script' && value.pacScript && value.pacScript.url;
+      if (!url || !self.prefs.isHttpsUrl(url) || levelOfControl !== 'controlled_by_this_extension') {
+        app.emit('notify', 'Reload is for PAC URL mode only; the inline script is applied automatically when it has no syntax errors');
+        return;
+      }
+      const active = {value: {mode: 'pac_script', pacScript: {url, mandatory: true}}};
+      const blocker = {value: {mode: 'pac_script', pacScript: {
+        data: 'function FindProxyForURL(url, host) { return "PROXY 127.0.0.1:1"; }',
+        mandatory: true
+      }}};
+      chrome.proxy.settings.set(blocker, () => {
+        chrome.runtime.lastError;
+        chrome.proxy.settings.set(active, () => {
+          const e = chrome.runtime.lastError;
+          app.emit('notify', e ? e.message : 'PAC reloaded');
+        });
+      });
     });
   }
   set(mode, value, select = false) {
@@ -254,8 +307,13 @@ class PacView extends HTMLElement {
     }
     else if (mode === 'script') {
       const editor = this.shadowRoot.getElementById('editor');
+      // programmatic update: do not auto-apply or save
+      this.silent = true;
       editor.value = value;
-      clearTimeout(editor.timeout); // prevent editor from saving
+      this.silent = false;
+      this.pending = false;
+      clearTimeout(this.applyTimer);
+      clearTimeout(this.fallbackTimer);
       if (select) {
         this.shadowRoot.getElementById('pac-2').checked = true;
         editor.focus();

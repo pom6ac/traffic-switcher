@@ -16,15 +16,6 @@ app.storage({
 });
 
 const click = ({target, isTrusted}) => {
-  // select radio buttons on focus
-  const id = target.getAttribute('for');
-  if (id) {
-    const elem = document.getElementById(id);
-    elem.checked = true;
-    if (elem.dataset.mode) {
-      app.emit('change-proxy', elem.dataset.mode);
-    }
-  }
   // change proxy type
   const mode = target.dataset.mode;
   if (mode && isTrusted) {
@@ -33,15 +24,19 @@ const click = ({target, isTrusted}) => {
 };
 document.addEventListener('click', click);
 
-app.on('proxy-changed', mode => {
-  const tab = document.querySelector(`#tabs [data-mode="${mode === 'pac_script' ? 'pac_script' : 'direct'}"]`);
-  const supported = mode === 'direct' || mode === 'pac_script';
-  const open = tab.dataset.open;
-
-  const body = document.getElementById(open);
+// show a panel without changing which tab (= active proxy mode) is selected
+app.on('show-panel', id => {
+  const body = document.getElementById(id);
   [...document.querySelectorAll('.body')].filter(b => b !== body)
     .forEach(b => b.classList.add('hide'));
   body.classList.remove('hide');
+});
+
+// tabs always reflect the mode that is ACTUALLY active in Chrome
+app.on('proxy-changed', mode => {
+  const supported = mode === 'direct' || mode === 'pac_script';
+  const tab = document.querySelector(`#tabs [data-mode="${mode === 'pac_script' ? 'pac_script' : 'direct'}"]`);
+  app.emit('show-panel', tab.dataset.open);
   if (supported) {
     tab.previousElementSibling.checked = true;
   }

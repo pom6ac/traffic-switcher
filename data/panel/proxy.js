@@ -112,11 +112,14 @@ app.on('change-proxy', mode => {
     });
   }
   catch (e) {
-    // proxy was not changed; keep the requested tab open so the input can be fixed
+    // proxy was NOT changed: show the real mode in the tabs, but keep the PAC panel
+    // open so the input can be fixed
     app.emit('notify', e.message || e);
-    if (SUPPORTED.includes(mode)) {
-      app.emit('proxy-changed', mode);
-    }
+    update(() => {
+      if (mode === 'pac_script') {
+        app.emit('show-panel', 'pac');
+      }
+    });
   }
 });
 

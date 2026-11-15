@@ -14,9 +14,12 @@ const DEFAULT_COLORS = {
 
 /* icon color */
 {
+  // latest-wins: an update that arrives while rendering is re-rendered afterwards, not dropped
   let busy = false;
+  let pending = null;
   self.icon = async (config, reason) => {
     if (busy) {
+      pending = {config, reason};
       return;
     }
     console.info('icon', reason);
@@ -80,6 +83,11 @@ const DEFAULT_COLORS = {
       console.error(e);
     }
     busy = false;
+    if (pending) {
+      const next = pending;
+      pending = null;
+      self.icon(next.config, next.reason);
+    }
   };
 }
 
@@ -96,7 +104,7 @@ chrome.proxy.settings.onChange.addListener(config => {
 const harden = async () => {
   const stored = await chrome.storage.local.get(null);
   // keep only HTTPS entries of the saved PAC URL list instead of dropping it entirely
-  if (Array.isArray(stored.pacs) && !stored.pacs.every(prefs.isHttpsUrl)) {
+  if (Array.isArray(stored.pacs) && !prefs.SCHEMA.pacs(stored.pacs)) {
     stored.pacs = stored.pacs.filter(prefs.isHttpsUrl).slice(-50);
     await chrome.storage.local.set({pacs: stored.pacs});
   }
@@ -113,7 +121,9 @@ const harden = async () => {
   const config = await chrome.proxy.settings.get({});
   if (config.levelOfControl === 'controlled_by_this_extension') {
     const {mode, pacScript} = config.value;
-    const unsafe = mode === 'fixed_servers' ||
+    // anything this extension can no longer manage (manual servers, WPAD auto-detect, ...)
+    // or a PAC URL that is not HTTPS falls back to direct; 'system' is left as is
+    const unsafe = !['direct', 'pac_script', 'system'].includes(mode) ||
       (mode === 'pac_script' && pacScript && pacScript.url && !prefs.isHttpsUrl(pacScript.url));
     if (unsafe) {
       console.warn('resetting unsupported proxy configuration', mode);
@@ -123,31 +133,28 @@ const harden = async () => {
 };
 
 // init
-const startup = async () => {
-  if (startup.once) {
-    return;
+const startup = async browserStart => {
+  if (!startup.hardened) {
+    startup.hardened = harden().catch(e => console.error(e));
   }
-  startup.once = true;
-  try {
-    await harden();
-  }
-  catch (e) {
-    console.error(e);
-  }
-  const {'startup-proxy': startupProxy} = await chrome.storage.local.get({
-    'startup-proxy': 'no'
-  });
-  if (startupProxy === 'direct') {
-    await chrome.proxy.settings.set({
-      value: {mode: 'direct'}
+  await startup.hardened;
+  // "Startup Proxy" applies on browser start only, not on extension install/update
+  if (browserStart) {
+    const {'startup-proxy': startupProxy} = await chrome.storage.local.get({
+      'startup-proxy': 'no'
     });
+    if (startupProxy === 'direct') {
+      await chrome.proxy.settings.set({
+        value: {mode: 'direct'}
+      });
+    }
   }
   chrome.proxy.settings.get({}, config => {
     self.icon(config, 'startup');
   });
 };
-chrome.runtime.onInstalled.addListener(startup);
-chrome.runtime.onStartup.addListener(startup);
+chrome.runtime.onInstalled.addListener(() => startup(false));
+chrome.runtime.onStartup.addListener(() => startup(true));
 
 chrome.runtime.onMessage.addListener((request, sender) => {
   // accept messages from our own pages only

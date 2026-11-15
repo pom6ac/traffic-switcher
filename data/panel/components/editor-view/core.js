@@ -24,6 +24,8 @@ class EditorView extends HTMLElement {
     `;
 
     ace.config.set('basePath', (new URL(import.meta.url + '/../ace-builds-1.4.12/src/')).href);
+    // load the syntax-check worker from the bundled file (blob: workers are blocked by our CSP)
+    ace.config.set('loadWorkerFromBlob', false);
     ace.require('ace/ext/language_tools');
 
     const editor = this.editor = ace.edit(shadow.getElementById('editor'), {
@@ -36,7 +38,13 @@ class EditorView extends HTMLElement {
       enableBasicAutocompletion: true,
       enableSnippets: true,
       enableLiveAutocompletion: false,
-      useWorker: false
+      useWorker: true
+    });
+    // syntax check results from the bundled JS worker
+    this.linted = false;
+    editor.session.on('changeAnnotation', () => {
+      this.linted = true;
+      this.dispatchEvent(new Event('lint'));
     });
     editor.renderer.attachToShadowRoot();
     let lastCursor = {};
@@ -67,6 +75,9 @@ class EditorView extends HTMLElement {
   set value(v) {
     // move cursor to end
     this.editor.setValue(v, 1);
+  }
+  get errors() {
+    return this.editor.session.getAnnotations().filter(a => a.type === 'error');
   }
   get cursor() {
     return this.editor.getCursorPosition();

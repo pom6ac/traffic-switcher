@@ -1,20 +1,18 @@
-/* globals app */
+/* globals app, prefs */
 'use strict';
 
 // colors
 app.storage({
-  'color-auto_detect': '#2124fc',
-  'color-direct': '#000',
-  'color-fixed_servers': '#fd0e1c',
-  'color-pac_script_url': '#fb9426',
-  'color-pac_script_data': '#fb9426',
-  'color-system': '#31736b'
-}).then(prefs => {
-  document.querySelector('#tabs li.no-proxy').style['border-top-color'] = prefs['color-direct'];
-  document.querySelector('#tabs li.auto-proxy').style['border-top-color'] = prefs['color-auto_detect'];
-  document.querySelector('#tabs li.system-proxy').style['border-top-color'] = prefs['color-system'];
-  document.querySelector('#tabs li.manual-proxy').style['border-top-color'] = prefs['color-fixed_servers'];
-  document.querySelector('#tabs li.pac-proxy').style['border-top-color'] = prefs['color-pac_script_url'];
+  'color-direct': '#000000',
+  'color-pac_script_url': '#fb9426'
+}).then(ps => {
+  const set = (selector, color) => {
+    if (prefs.isColor(color)) {
+      document.querySelector(selector).style['border-top-color'] = color;
+    }
+  };
+  set('#tabs li.no-proxy', ps['color-direct']);
+  set('#tabs li.pac-proxy', ps['color-pac_script_url']);
 });
 
 const click = ({target, isTrusted}) => {
@@ -36,15 +34,20 @@ const click = ({target, isTrusted}) => {
 document.addEventListener('click', click);
 
 app.on('proxy-changed', mode => {
-  const tab = document.querySelector(`#tabs [data-mode="${mode}"]`);
+  const tab = document.querySelector(`#tabs [data-mode="${mode === 'pac_script' ? 'pac_script' : 'direct'}"]`);
+  const supported = mode === 'direct' || mode === 'pac_script';
   const open = tab.dataset.open;
 
-  if (open) {
-    const body = document.getElementById(open);
-    [...document.querySelectorAll('.body')].filter(b => b !== body)
-      .forEach(b => b.classList.add('hide'));
-    body.classList.remove('hide');
-    tab.click();
+  const body = document.getElementById(open);
+  [...document.querySelectorAll('.body')].filter(b => b !== body)
+    .forEach(b => b.classList.add('hide'));
+  body.classList.remove('hide');
+  if (supported) {
+    tab.previousElementSibling.checked = true;
+  }
+  else {
+    // a mode set by someone else (system, another extension, ...): select no tab
+    document.querySelectorAll('#tabs input').forEach(i => i.checked = false);
   }
 });
 
@@ -59,24 +62,17 @@ app.on('notify', msg => {
   window.setTimeout(() => div.remove(), 5000);
 });
 
-document.getElementById('options').onclick = () => chrome.runtime.openOptionsPage();
+document.getElementById('options').onclick = e => {
+  e.preventDefault();
+  chrome.runtime.openOptionsPage();
+};
 document.addEventListener('keydown', e => {
   const meta = e.ctrlKey || e.metaKey;
-  if (meta) {
-    if (e.code === 'Digit1' || e.code === 'Digit2' || e.code === 'Digit3' || e.code === 'Digit4' || e.code === 'Digit5') {
-      e.preventDefault();
-      click({
-        target: document.querySelector(`#tabs label:nth-child(${e.key}) li`),
-        isTrusted: true
-      });
-    }
+  if (meta && (e.code === 'Digit1' || e.code === 'Digit2')) {
+    e.preventDefault();
+    click({
+      target: document.querySelector(`#tabs label:nth-child(${e.code.slice(-1)}) li`),
+      isTrusted: true
+    });
   }
 });
-
-if (/Firefox/.test(navigator.userAgent)) {
-  chrome.extension.isAllowedIncognitoAccess(result => {
-    if (!result) {
-      document.getElementById('private').classList.remove('hide');
-    }
-  });
-}

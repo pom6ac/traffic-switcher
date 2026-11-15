@@ -10,9 +10,11 @@
          "description": "Execute Action"
       }
    },
+   "content_security_policy": {
+      "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+   },
    "default_locale": "en",
    "description": "__MSG_description__",
-   "homepage_url": "https://webextension.org/listing/proxy-switcher.html",
    "icons": {
       "128": "data/icons/128.png",
       "16": "data/icons/16.png",
@@ -22,14 +24,12 @@
       "64": "data/icons/64.png"
    },
    "manifest_version": 3,
+   "minimum_chrome_version": "102",
    "name": "Traffic Switcher",
    "options_ui": {
       "open_in_tab": true,
       "page": "data/options/index.html"
    },
-   "permissions": [ "storage", "notifications", "proxy" ],
-   "storage": {
-      "managed_schema": "schema.json"
-   },
-   "version": "0.6.7"
+   "permissions": [ "storage", "proxy" ],
+   "version": "0.7.0"
 }

@@ -1,4 +1,5 @@
-import './editor-view/core.js'
+/* globals app */
+import './editor-view/core.js';
 
 const SAMPLE = `function FindProxyForURL(url, host) {
   // our local URLs from the domains below example.com don't need a proxy:
@@ -90,7 +91,7 @@ class PacView extends HTMLElement {
       <div class="grid">
         <label><input id="pac-1" type="radio" name="pac" checked value="href" data-mode="pac_script">URL</label>
         <form class="one" id="href-container">
-          <input type="text" id="href" placeholder="http://example.com/sample.pac" for="pac-1" list="pacs" autocomplete="off" data-value="" value="">
+          <input type="text" id="href" placeholder="https://example.com/proxy.pac" for="pac-1" list="pacs" autocomplete="off" data-value="" value="">
           <input type="button" id="reload" data-cmd="reload-pac">
           <input type="button" id="remove" disabled="true" data-cmd="delete-pac">
           <input type="submit" id="apply" disabled="true" value="">
@@ -136,19 +137,15 @@ class PacView extends HTMLElement {
     const changed = () => {
       app.emit('change-proxy', 'pac_script');
 
-      chrome.storage.local.set({
-        'script': editor.value
-      });
+      if (self.prefs.isScript(editor.value)) {
+        chrome.storage.local.set({
+          'script': editor.value
+        });
+      }
     };
     editor.editor.on('change', e => {
       clearTimeout(editor.timeout);
       editor.timeout = setTimeout(changed, 300);
-    });
-
-    this.shadowRoot.getElementById('pacs').addEventListener('input', () => {
-      href.dispatchEvent('keyup', {
-        bubbles: true
-      });
     });
 
     this.shadowRoot.getElementById('pac-1').onchange = e => {
@@ -188,7 +185,7 @@ class PacView extends HTMLElement {
     }).then(prefs => {
       // update pacs
       pacs.textContent = '';
-      prefs.pacs.forEach(pac => {
+      prefs.pacs.filter(self.prefs.isHttpsUrl).forEach(pac => {
         const option = document.createElement('option');
         option.value = pac;
         pacs.appendChild(option);
@@ -197,8 +194,12 @@ class PacView extends HTMLElement {
   }
   apply() {
     const href = this.shadowRoot.getElementById('href');
-    const pac = href.value;
-    href.dataset.value = pac;
+    const pac = href.value.trim();
+    if (!self.prefs.isHttpsUrl(pac)) {
+      app.emit('notify', 'PAC URL must be a valid https:// address');
+      return;
+    }
+    href.value = href.dataset.value = pac;
 
     chrome.storage.local.set({
       'last-pac': href.value
@@ -207,7 +208,7 @@ class PacView extends HTMLElement {
       pacs: []
     }).then(prefs => {
       prefs.pacs.push(pac);
-      prefs.pacs = prefs.pacs.filter((p, i, l) => p && l.indexOf(p) === i);
+      prefs.pacs = prefs.pacs.filter((p, i, l) => self.prefs.isHttpsUrl(p) && l.indexOf(p) === i).slice(-50);
       chrome.storage.local.set(prefs, () => {
         href.dispatchEvent(new Event('keyup'));
         console.log('done');
@@ -235,12 +236,11 @@ class PacView extends HTMLElement {
     });
   }
   reload() {
-    const href = this.shadowRoot.getElementById('href');
-    const url = href.value;
-    href.value = 'http://127.0.0.1:8888/dummy.pac';
-    app.emit('change-proxy', 'pac_script');
-    href.value = url;
-    app.emit('change-proxy', 'pac_script');
+    // force Chrome to re-download the PAC file: switch to direct, then back
+    chrome.proxy.settings.set({value: {mode: 'direct'}}, () => {
+      chrome.runtime.lastError;
+      app.emit('change-proxy', 'pac_script');
+    });
   }
   set(mode, value, select = false) {
     if (mode === 'href') {
@@ -268,7 +268,7 @@ class PacView extends HTMLElement {
   }
   get(mode) {
     if (mode === 'href') {
-      return this.shadowRoot.getElementById('href').value || 'http://example.com/sample.pac';
+      return this.shadowRoot.getElementById('href').value.trim();
     }
     else if (mode === 'script') {
       return this.shadowRoot.getElementById('editor').value;

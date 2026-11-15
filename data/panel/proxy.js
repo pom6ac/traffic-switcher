@@ -1,234 +1,127 @@
-/* globals app */
+/* globals app, prefs */
 'use strict';
 
-chrome.proxy.settings.set = new Proxy(chrome.proxy.settings.set, {
-  apply(target, self, args) {
-    const config = args[0];
-    delete config.value.remoteDNS;
-    delete config.value.noPrompt;
+const SUPPORTED = ['direct', 'pac_script'];
 
-    Reflect.apply(target, self, args);
-  }
-});
-
-function update(callback = function() {}, store = true) {
+function update(callback = function() {}) {
   const _ = chrome.i18n.getMessage;
   chrome.proxy.settings.get({}, ({value}) => {
     app.emit('proxy-changed', value.mode);
 
     callback(value.mode, {value});
-    if (value.mode === 'fixed_servers') {
-      const profile = document.querySelector('manual-view').name;
-      if (profile && store) {
-        chrome.storage.local.set({
-          'last-manual': profile
-        });
-      }
-      app.emit('update-description', _('modeFixedMSG'));
-    }
-    else if (value.mode === 'pac_script') {
+    if (value.mode === 'pac_script') {
       app.emit('update-description', _('modePACMSG'));
     }
     else if (value.mode === 'direct') {
       app.emit('update-description', _('modeDirectMSG'));
     }
-    else if (value.mode === 'auto_detect') {
-      app.emit('update-description', _('modeAutoMSG'));
-    }
-    else if (value.mode === 'system') {
-      app.emit('update-description', _('modeSystemMSG'));
+    else {
+      app.emit('update-description', _('modeOtherMSG'));
     }
   });
 }
+
 // initialization
 update((mode, config) => {
-  Promise.all([
-    () => { // fixed_servers
-      if (mode === 'fixed_servers') {
-        const m = document.querySelector('manual-view');
-        return m.search(config).then(name => {
-          m.update(config.value, name);
-          if (!name) {
-            m.random();
-          }
-          m.profiles();
-        });
-      }
-      else {
-        return app.storage('last-manual').then(prefs => {
-          const name = prefs['last-manual'];
-          const m = document.querySelector('manual-view');
-          if (name) {
-            return app.storage('profile.' + name).then(prefs => {
-              const profile = prefs['profile.' + name];
-              if (profile) {
-                m.update(profile.value, name);
-              }
-              else {
-                m.random();
-              }
-              m.profiles();
-            });
-          }
-          else {
-            m.random();
-            m.profiles();
-          }
-        });
-      }
-    },
-    () => { // pac_script
-      const pac = document.querySelector('pac-view');
-      if (mode === 'pac_script') {
-        if (config.value.pacScript.url) {
-          pac.set('href', config.value.pacScript.url, true);
-          return app.storage({
-            'script': false
-          }).then(prefs => {
-            if (prefs.script) {
-              pac.set('script', prefs.script, false);
-            }
-          });
-        }
-        else if (config.value.pacScript.data) {
-          pac.set('script', config.value.pacScript.data, true);
-          return app.storage({
-            'last-pac': false
-          }).then(prefs => {
-            if (prefs['last-pac']) {
-              pac.set('href', prefs['last-pac'], false);
-            }
-          });
-        }
-      }
-      else {
+  const pac = document.querySelector('pac-view');
+  customElements.whenDefined('pac-view').then(() => {
+    if (mode === 'pac_script' && config.value.pacScript) {
+      if (config.value.pacScript.url) {
+        pac.set('href', config.value.pacScript.url, true);
         return app.storage({
-          'script': false,
-          'last-pac': false,
-          'pac-type': 'url'
-        }).then(prefs => {
-          if (prefs['last-pac']) {
-            pac.set('href', prefs['last-pac'], prefs['pac-type'] === 'url');
+          'script': false
+        }).then(ps => {
+          if (prefs.isScript(ps.script)) {
+            pac.set('script', ps.script, false);
           }
-          if (prefs.script) {
-            pac.set('script', prefs.script, prefs['pac-type'] === 'data');
+        });
+      }
+      else if (config.value.pacScript.data) {
+        pac.set('script', config.value.pacScript.data, true);
+        return app.storage({
+          'last-pac': false
+        }).then(ps => {
+          if (prefs.isHttpsUrl(ps['last-pac'])) {
+            pac.set('href', ps['last-pac'], false);
           }
         });
       }
     }
-  ].map(c => c())).then(() => document.body.dataset.ready = true);
-}, false);
+    else {
+      return app.storage({
+        'script': false,
+        'last-pac': false,
+        'pac-type': 'url'
+      }).then(ps => {
+        if (prefs.isHttpsUrl(ps['last-pac'])) {
+          pac.set('href', ps['last-pac'], ps['pac-type'] === 'url');
+        }
+        if (prefs.isScript(ps.script)) {
+          pac.set('script', ps.script, ps['pac-type'] === 'data');
+        }
+      });
+    }
+  }).then(() => document.body.dataset.ready = true);
+});
 
 const proxy = {};
-proxy.manual = () => {
-  const m = document.querySelector('manual-view');
-  const scheme = m.scheme;
-  const value = {
-    mode: 'fixed_servers',
-    rules: {}
-  };
-  const values = m.values;
-  console.log(values);
-  if (values.http.host && values.http.port) {
-    value.rules.proxyForHttp = {
-      host: values.http.host,
-      port: Number(values.http.port),
-      scheme
-    };
-  }
-  if (values.ssl.host && values.ssl.port) {
-    value.rules.proxyForHttps = {
-      host: values.ssl.host,
-      port: Number(values.ssl.port),
-      scheme
-    };
-  }
-  if (values.ftp.host && values.ftp.port) {
-    value.rules.proxyForFtp = {
-      host: values.ftp.host,
-      port: Number(values.ftp.port),
-      scheme
-    };
-  }
-  if (values.fallback.host && values.fallback.port) {
-    value.rules.fallbackProxy = {
-      host: values.fallback.host,
-      port: Number(values.fallback.port),
-      scheme
-    };
-  }
-  const bypassList = m.bypassList.split(',').map(s => s.trim())
-    .filter((s, i, l) => s && l.indexOf(s) === i);
-  if (bypassList.length) {
-    value.rules.bypassList = bypassList;
-  }
-
-  value.remoteDNS = m.remoteDNS;
-  value.noPrompt = m.noPrompt;
-
-  return {value};
-};
 proxy.pac = () => {
+  const view = document.querySelector('pac-view');
   const value = {
     mode: 'pac_script',
     pacScript: {
       mandatory: true
     }
   };
-  const mode = document.querySelector('pac-view').mode;
-  if (mode === 'href') {
-    value.pacScript.url = document.querySelector('pac-view').get('href');
+  if (view.mode === 'href') {
+    const url = view.get('href');
+    if (!prefs.isHttpsUrl(url)) {
+      throw Error('PAC URL must be a valid https:// address');
+    }
+    value.pacScript.url = url;
   }
-  else if (mode === 'script') {
-    value.pacScript.data = document.querySelector('pac-view').get('script');
+  else {
+    const script = view.get('script');
+    if (!prefs.isScript(script)) {
+      throw Error('PAC script must define FindProxyForURL (max 512 KB)');
+    }
+    value.pacScript.data = script;
   }
   return {value};
 };
 
 app.on('change-proxy', mode => {
-  let config = {
-    value: {mode}
-  };
-  if (mode === 'fixed_servers') {
-    config = proxy.manual();
-  }
-  else if (mode === 'pac_script') {
-    config = proxy.pac();
-  }
-  // set proxy
   try {
+    if (SUPPORTED.includes(mode) === false) {
+      throw Error('Unsupported proxy mode: ' + mode);
+    }
+    const config = mode === 'pac_script' ? proxy.pac() : {value: {mode: 'direct'}};
     chrome.proxy.settings.set(config, () => {
       const lastError = chrome.runtime.lastError;
       if (lastError) {
         app.emit('notify', lastError.message);
-        app.emit('proxy-changed', mode);
+        update();
       }
       else {
         update(m => {
           if (m !== mode) {
-            app.emit('notify', 'Cannot set this proxy type!');
-            app.emit('proxy-changed', mode);
+            app.emit('notify', 'Cannot set this proxy type! (controlled by another extension or policy?)');
           }
         });
       }
     });
   }
   catch (e) {
+    // proxy was not changed; keep the requested tab open so the input can be fixed
     app.emit('notify', e.message || e);
-    // change tab if necessary
-    app.emit('proxy-changed', mode);
+    if (SUPPORTED.includes(mode)) {
+      app.emit('proxy-changed', mode);
+    }
   }
 });
 
 chrome.proxy.onProxyError.addListener(e => {
-  app.emit('notify', e.message || e);
-});
-
-document.addEventListener('click', ({target}) => {
-  const cmd = target.dataset.cmd;
-  if (cmd === 'set-manual') {
-    app.emit('change-proxy', 'fixed_servers');
-  }
+  app.emit('notify', e.error + (e.details ? ': ' + e.details : ''));
 });
 
 chrome.runtime.sendMessage({

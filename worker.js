@@ -1,11 +1,16 @@
-/* global app */
+/* global prefs */
+'use strict';
 
-if (typeof importScripts !== 'undefined') {
-  self.importScripts('/data/panel/utils.js');
-  self.importScripts('/managed.js');
-}
+self.importScripts('/data/shared/prefs.js');
 
 const _ = chrome.i18n.getMessage;
+
+const DEFAULT_COLORS = {
+  'color-direct': '#000000',
+  'color-pac_script_url': '#fb9426',
+  'color-pac_script_data': '#fb9426',
+  'color-other': '#777777'
+};
 
 /* icon color */
 {
@@ -18,20 +23,15 @@ const _ = chrome.i18n.getMessage;
     busy = true;
 
     try {
-      let prefs = await chrome.storage.local.get(null);
-      prefs = {
-        'color-auto_detect': '#2124fc',
-        'color-direct': '#000',
-        'color-fixed_servers': '#fd0e1c',
-        'color-pac_script_url': '#fb9426',
-        'color-pac_script_data': '#fb9426',
-        'color-system': '#31736b',
-        'text': false, // icon text,
-        'profiles': [],
-        ...prefs
-      };
-      let mode = config.value.mode || config.value.proxyType;
+      const stored = await chrome.storage.local.get(Object.keys(DEFAULT_COLORS));
+      const colors = {...DEFAULT_COLORS};
+      for (const [k, v] of Object.entries(stored)) {
+        if (prefs.isColor(v)) {
+          colors[k] = v;
+        }
+      }
 
+      let mode = config.value.mode;
       if (mode === 'pac_script') {
         mode = config.value.pacScript && config.value.pacScript.url ? 'pac_script_url' : 'pac_script_data';
       }
@@ -53,44 +53,27 @@ const _ = chrome.i18n.getMessage;
           'M45.435,6.846v0.919v23.644H2.565V7.765V6.898V6.009h0.293    h1.359h39.485h1.419h0.312V6.846z'
         )
       );
-      ctx.fillStyle = prefs['color-' + mode];
+      ctx.fillStyle = colors['color-' + mode] || colors['color-other'];
       ctx.fillRect(5.04, 8.652, 37.83, 20.176);
 
-      if (mode.startsWith('pac_script')) {
-        ctx.fillStyle = mode === 'pac_script_url' ? prefs['color-system'] : prefs['color-fixed_servers'];
-        ctx.fillRect(5.04, 8.652, 37.83 / 2, 20.176);
-      }
-      chrome.action.setBadgeText({
-        text: ''
-      });
-      if (mode === 'fixed_servers' && prefs.text) {
-        const profile = (prefs.profiles || []).filter(p => {
-          const profile = prefs['profile.' + p];
-          return profile && app.compare(profile, config);
-        }).shift();
-        if (profile) {
-          chrome.action.setBadgeText({
-            text: profile[0]
-          });
-        }
-      }
-
+      chrome.action.setBadgeText({text: ''});
       chrome.action.setIcon({
         imageData: ctx.getImageData(0, 0, 48, 48)
       });
 
-      let title = 'Proxy Switcher\n\n';
-      title += ({
-        'direct': _('modeDirect'),
-        'auto_detect': _('modeAuto'),
-        get 'pac_script_url'() {
-          return _('modePACU') + config.value.pacScript.url;
-        },
-        'pac_script_data': _('modePACD'),
-        'fixed_servers': _('modeFixed'),
-        'system': _('modeSystem')
-      })[mode];
-
+      let title = 'Traffic Switcher\n\n';
+      if (mode === 'direct') {
+        title += _('modeDirect');
+      }
+      else if (mode === 'pac_script_url') {
+        title += _('modePACU') + config.value.pacScript.url;
+      }
+      else if (mode === 'pac_script_data') {
+        title += _('modePACD');
+      }
+      else {
+        title += _('modeOther') + ' (' + mode + ')';
+      }
       chrome.action.setTitle({title}, () => chrome.runtime.lastError);
     }
     catch (e) {
@@ -104,84 +87,84 @@ chrome.proxy.settings.onChange.addListener(config => {
   self.icon(config, 'proxy-changed');
 });
 
+/* Bring storage and the active proxy into the reduced, safe feature set:
+ * - drop keys of removed features (manual profiles, managed import, counters, ...);
+ * - drop stored values that do not pass validation;
+ * - if this extension still controls a manual proxy (e.g. a random "free proxy"
+ *   from the removed search feature) or a non-HTTPS PAC URL, fall back to direct.
+ */
+const harden = async () => {
+  const stored = await chrome.storage.local.get(null);
+  // keep only HTTPS entries of the saved PAC URL list instead of dropping it entirely
+  if (Array.isArray(stored.pacs) && !stored.pacs.every(prefs.isHttpsUrl)) {
+    stored.pacs = stored.pacs.filter(prefs.isHttpsUrl).slice(-50);
+    await chrome.storage.local.set({pacs: stored.pacs});
+  }
+  const obsolete = prefs.obsoleteKeys(stored);
+  const {rejected} = prefs.sanitize(Object.fromEntries(
+    Object.entries(stored).filter(([k]) => !obsolete.includes(k))
+  ));
+  const remove = [...obsolete, ...rejected];
+  if (remove.length) {
+    console.info('removing unsupported preferences', remove);
+    await chrome.storage.local.remove(remove);
+  }
+
+  const config = await chrome.proxy.settings.get({});
+  if (config.levelOfControl === 'controlled_by_this_extension') {
+    const {mode, pacScript} = config.value;
+    const unsafe = mode === 'fixed_servers' ||
+      (mode === 'pac_script' && pacScript && pacScript.url && !prefs.isHttpsUrl(pacScript.url));
+    if (unsafe) {
+      console.warn('resetting unsupported proxy configuration', mode);
+      await chrome.proxy.settings.set({value: {mode: 'direct'}});
+    }
+  }
+};
+
 // init
 const startup = async () => {
   if (startup.once) {
     return;
   }
   startup.once = true;
-  const prefs = await chrome.storage.local.get({
-    'color': '#848384',
+  try {
+    await harden();
+  }
+  catch (e) {
+    console.error(e);
+  }
+  const {'startup-proxy': startupProxy} = await chrome.storage.local.get({
     'startup-proxy': 'no'
   });
-  // badge color
-  chrome.action.setBadgeBackgroundColor({
-    color: prefs.color
-  });
-  // initial proxy
-  if (prefs['startup-proxy'] !== 'no') {
+  if (startupProxy === 'direct') {
     await chrome.proxy.settings.set({
-      value: {
-        mode: prefs['startup-proxy']
-      }
+      value: {mode: 'direct'}
     });
   }
   chrome.proxy.settings.get({}, config => {
-    self.icon(config, 'startup/1');
+    self.icon(config, 'startup');
   });
 };
 chrome.runtime.onInstalled.addListener(startup);
 chrome.runtime.onStartup.addListener(startup);
 
-chrome.runtime.onMessage.addListener(request => {
-  if (request.method === 'update-icon') {
+chrome.runtime.onMessage.addListener((request, sender) => {
+  // accept messages from our own pages only
+  if (sender.id !== chrome.runtime.id || !sender.url || !sender.url.startsWith(chrome.runtime.getURL(''))) {
+    return;
+  }
+  if (request && request.method === 'update-icon') {
     chrome.proxy.settings.get({}, config => self.icon(config, 'popup-open'));
   }
 });
 
 // pref changes
-chrome.storage.onChanged.addListener(ps => {
-  if (ps.color) {
-    chrome.action.setBadgeBackgroundColor({
-      color: ps.color.newValue
-    });
+chrome.storage.onChanged.addListener((ps, area) => {
+  if (area !== 'local') {
+    return;
   }
-  if (
-    ps.profiles || ps.text ||
-    ps['color-auto_detect'] || ps['color-direct'] || ps['color-fixed_servers'] ||
-    ps['color-pac_script_data'] || ps['color-pac_script_url'] || ps['color-system']
-  ) {
+  if (Object.keys(ps).some(k => k.startsWith('color-'))) {
     chrome.proxy.settings.get({}, config => self.icon(config, 'pref-changes'));
   }
 });
-
-/* FAQs & Feedback */
-{
-  chrome.management = chrome.management || {
-    getSelf(c) {
-      c({installType: 'normal'});
-    }
-  };
-  if (navigator.webdriver !== true) {
-    const {homepage_url: page, name, version} = chrome.runtime.getManifest();
-    chrome.runtime.onInstalled.addListener(({reason, previousVersion}) => {
-      chrome.management.getSelf(({installType}) => installType === 'normal' && chrome.storage.local.get({
-        'faqs': true,
-        'last-update': 0
-      }, prefs => {
-        if (reason === 'install' || (prefs.faqs && reason === 'update')) {
-          const doUpdate = (Date.now() - prefs['last-update']) / 1000 / 60 / 60 / 24 > 45;
-          if (doUpdate && previousVersion !== version) {
-            chrome.tabs.query({active: true, lastFocusedWindow: true}, tbs => chrome.tabs.create({
-              url: page + '?version=' + version + (previousVersion ? '&p=' + previousVersion : '') + '&type=' + reason,
-              active: reason === 'install',
-              ...(tbs && tbs.length && {index: tbs[0].index + 1})
-            }));
-            chrome.storage.local.set({'last-update': Date.now()});
-          }
-        }
-      }));
-    });
-    chrome.runtime.setUninstallURL(page + '?rd=feedback&name=' + encodeURIComponent(name) + '&version=' + version);
-  }
-}
